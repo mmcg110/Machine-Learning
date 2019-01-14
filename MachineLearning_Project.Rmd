@@ -1,0 +1,120 @@
+---
+title: "Prediction of Proper Workout Form based on Wearable Data"
+output: 
+  html_document:
+    keep_md: true
+---
+```{r, echo=FALSE, message=FALSE, results=FALSE}
+library(caret)
+library(gbm)
+library(gridExtra)
+```
+```{r, echo=FALSE, message=FALSE, results=FALSE, cache=TRUE}
+
+dataTrain <- read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"), na.strings = "NA")
+dataTest <- read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"), na.strings = "NA")
+```
+## Executive Summary
+
+Data from the Weight Lifting Exercise Dataset by Velloso et al. was analyzed in order to determine if it was possible to predict whether exercises were performed correctly.Training data was imported into R and pre-processed to remove missing data, near-zero variance variables and correlated predictors. The data was split into training and test sets and several classification models were evaluated to determine ability to predict on the data. The final model was used to predict exercise quality on a separate test set, one without assigned classes to the exercises, which was processed in a similar manner.
+
+## Data Processing
+
+Training data was downloaded from the URL link. The data contained `r dim(dataTrain)[2]` possible predictors for `r dim(dataTrain)[1]` samples. Inspecting the data set revealed the first 7 predictors related to participant name and time the exercise was performed. Since the person performing the activity and the time the activity was performed likely have little to do with whether or not an exercise was perfomed correctly, these first 7 predictors were removed. Further inspection of the dataset revealed that several predictors contained significant missing values. Since many models have issues with missing values, those predictors with greater than 80% missing values were removed from the training set. 
+
+```{r, echo=FALSE, message=FALSE, results=FALSE}
+#Remove time variables from training predictors
+exclude <- seq(1:7)
+dataTrain <- dataTrain[,-exclude]
+dataTest <- dataTest[,-exclude]
+
+#Remove training variables with more than 80% NA values
+NAthresh <- 0.2
+NAcols <- apply(dataTrain, 2, function(x) sum(is.na(x))/length(x)>NAthresh)
+
+dataTrain <- dataTrain[,!NAcols]
+dataTest <- dataTest[,!NAcols]
+```
+
+This left `r dim(dataTrain)[2]` variables on which to predict outcomes. Further processing of the data was then conducted to remove predictors with near zero variance as these can skew model perofrmance. In addition, highly correlated predictors were removed in order to improve performance.
+
+```{r, echo=FALSE, message=FALSE, results=FALSE}
+
+#Remove training columns with zero zero variance
+nzv <- nearZeroVar(dataTrain)
+dataTrain <- dataTrain[,-nzv]
+dataTest <- dataTest[,-nzv]
+
+#Check for high correlation
+trainCorr <- cor(dataTrain[,-dim(dataTrain)[2]])
+highCorr <- findCorrelation(trainCorr, 0.9)
+dataTrain <- dataTrain[,-highCorr]
+dataTest <- dataTest[,-highCorr]
+
+#Train model using rf and GBM, set training parameters
+set.seed(1234)
+inTrain <- createDataPartition(dataTrain$classe, p=0.75, list = FALSE)
+training <- dataTrain[inTrain,]
+testing <- dataTrain[-inTrain,]
+```
+
+The processed data set contained `r dim(dataTrain)[2]` predictors. Finally, the data set was split into testing and training sets in order to train the prediction model and estimate the out-of-sample accuracy of the model. The training data contained 75% of the samples, and the test set 25%.
+
+##Model Building
+
+Two classification models were built in order to compare performance. Since the goal of the prediction was a high level of accuracy, and interpretation of the results was less important, random forest and boosted tree (GBM) models were selected. These models can provide high accuracy and are adept at muli-class classification problems.
+
+Repeated k-fold cross-validation was chosen in order to tune the model parameters.  Due to the large number of samples, 5 folds and 3 repetitions was selected for cross-validation using the below code:
+
+```{r}
+trainCtrl <- trainControl(method = "repeatedcv",
+                          number = 5,
+                          repeats = 3,
+                          verboseIter = TRUE)
+```
+
+The default values for tuning parameters was used for the random forest model.  For the GBM model, a grid of values for the tuning parameters was used in order to determine the most optimal fit:
+
+```{r}
+grid <- expand.grid(n.trees=c(50, 150, 250, 500),
+                    shrinkage=c(0.05, 0.1, 0.3),
+                    n.minobsinnode = c(1, 5, 10),
+                    interaction.depth=c(1, 5, 10))
+```
+
+Models were then trained on the sub-training set (containing 75% of the samples from the total training set). 
+
+```{r, echo=FALSE}
+grid <- expand.grid(n.trees=150,
+                    shrinkage=0.1,
+                    n.minobsinnode = 10,
+                    interaction.depth=7)
+```
+```{r, message = FALSE, results=FALSE, cache=TRUE}
+rf_mod <- train(classe ~., data = training, method = "rf", trControl = trainCtrl)
+gbm_mod <- train(classe ~., data = training, method = "gbm", trControl = trainCtrl, tuneGrid = grid)
+```
+
+Plots of the model tuning showed that 150 trees, 0.1 shrinkage, 10 minimum observations in a node and an interaction depth of 7 would get high accuracy for the GBM model while not requiring too much computational time. R automatically selected 23 for the parameter *mtry* as the optimal tuning parameter for the random forest model.
+
+## Model evaluation
+
+After model building and tuning, the out-of-sample error of the models were evaluated using the sub-testing set (containing 25% of the total training set).  
+
+```{r}
+predRF <- predict(rf_mod, testing)
+predGBM <- predict(gbm_mod, testing)
+```
+```{r, echo=FALSE}
+data.frame(model = c("GBM", "RF"), rbind(confusionMatrix(predRF, testing$classe)$overall, confusionMatrix(predGBM, testing$classe)$overall))
+```
+
+The random forest model demonstrates superior performance, so this was selected as the final model:
+```{r, echo=FALSE}
+predFinal <- predict(rf_mod, dataTest)
+data.frame(case = seq(1:20), prediction = predFinal)
+```
+
+
+
+
